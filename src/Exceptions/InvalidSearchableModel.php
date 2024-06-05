@@ -13,6 +13,6 @@ class InvalidSearchableModel extends Exception
 
     public static function modelDoesNotImplementSearchable(string $model): self
     {
-        return new self("Model `{$model}` is added as a model search aspect but does not implement the `Spatie\Searchable\Searchable` interface.");
+        return new self("Model `{$model}` is added as a model search aspect but does not implement the `Searchable` interface or trait.");
     }
 }

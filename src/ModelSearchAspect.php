@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Traits\ForwardsCalls;
 use Spatie\Searchable\Exceptions\InvalidModelSearchAspect;
 use Spatie\Searchable\Exceptions\InvalidSearchableModel;
+use Laravel\Scout\Searchable as ScoutSearchable;
 
 /**
  * @mixin Builder
@@ -27,6 +28,9 @@ class ModelSearchAspect extends SearchAspect
     /** @var array */
     protected $callsToForward = [];
 
+    /** @var bool */
+    protected $usesScout = false;
+
     public static function forModel(string $model, ...$attributes): self
     {
         return new self($model, $attributes);
@@ -40,11 +44,16 @@ class ModelSearchAspect extends SearchAspect
      */
     public function __construct(string $model, $attributes = [])
     {
-        if (! is_subclass_of($model, Model::class)) {
+        if (!is_subclass_of($model, Model::class)) {
             throw InvalidSearchableModel::notAModel($model);
         }
 
-        if (! is_subclass_of($model, Searchable::class)) {
+        $this->usesScout = in_array(ScoutSearchable::class, class_uses_recursive($model));
+
+        if (
+            !is_subclass_of($model, Searchable::class) ||
+            !$this->usesScout
+        ) {
             throw InvalidSearchableModel::modelDoesNotImplementSearchable($model);
         }
 
@@ -102,6 +111,15 @@ class ModelSearchAspect extends SearchAspect
             throw InvalidModelSearchAspect::noSearchableAttributes($this->model);
         }
 
+        if ($this->usesScout) {
+            return $this->getScoutResults($term);
+        }
+
+        return $this->getEloquentResults($term);
+    }
+
+    protected function getEloquentResults(string $term): Collection
+    {
         $query = ($this->model)::query();
 
         $this->addSearchConditions($query, $term);
@@ -115,6 +133,31 @@ class ModelSearchAspect extends SearchAspect
         }
 
         return $query->get();
+    }
+
+    protected function getScoutResults(string $term): Collection
+    {
+        $searchableAttributes = array_map(function ($attribute) {
+            return $attribute->getAttribute();
+        }, $this->attributes);
+
+        // Perform a Scout search with specific attributes and forward function calls
+        $results = ($this->model)::search($term, function ($searchEngine, string $query, array $options) use ($searchableAttributes) {
+            $searchEngine->resetSearchableAttributes();
+            $searchEngine->updateSearchableAttributes($searchableAttributes);
+            return $searchEngine->search($query, $options);
+        });
+
+        // Apply forwarded calls
+        foreach ($this->callsToForward as $callToForward) {
+            $results = $results->{$callToForward['method']}(...$callToForward['parameters']);
+        }
+
+        if ($this->limit) {
+            $results = $results->take($this->limit);
+        }
+
+        return $results->get();
     }
 
     protected function addSearchConditions(Builder $query, string $term)
